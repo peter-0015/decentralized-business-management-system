@@ -1,0 +1,48 @@
+type Business = record {
+  id : nat64;
+  updated_at : opt nat64;
+  name : text;
+  description : text;
+  created_at : nat64;
+  address : text;
+};
+type BusinessPayload = record {
+  name : text;
+  description : text;
+  address : text;
+};
+type Error = variant { NotFound : record { msg : text } };
+type Order = record {
+  id : nat64;
+  updated_at : opt nat64;
+  total_price : nat64;
+  created_at : nat64;
+  products : vec Product;
+};
+type OrderPayload = record { product_ids : vec nat64 };
+type Product = record {
+  id : nat64;
+  updated_at : opt nat64;
+  name : text;
+  description : text;
+  created_at : nat64;
+  price : nat64;
+};
+type ProductPayload = record { name : text; description : text; price : nat64 };
+type Result = variant { Ok : Order; Err : Error };
+type Result_1 = variant { Ok : Business; Err : Error };
+type Result_2 = variant { Ok : Product; Err : Error };
+service : {
+  add_business : (BusinessPayload) -> (opt Business);
+  add_product : (ProductPayload) -> (opt Product);
+  create_order : (OrderPayload) -> (Result);
+  delete_business : (nat64) -> (Result_1);
+  delete_order : (nat64) -> (Result);
+  delete_product : (nat64) -> (Result_2);
+  get_business : (nat64) -> (Result_1) query;
+  get_order : (nat64) -> (Result) query;
+  get_product : (nat64) -> (Result_2) query;
+  update_business : (nat64, BusinessPayload) -> (Result_1);
+  update_order : (nat64, OrderPayload) -> (Result);
+  update_product : (nat64, ProductPayload) -> (Result_2);
+}
