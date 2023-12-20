@@ -1,1 +1,0 @@
-/home/samdev/decentralized-business-management-system/target/wasm32-unknown-unknown/release/icp_rust_boilerplate_backend.wasm: /home/samdev/decentralized-business-management-system/src/icp_rust_boilerplate_backend/src/lib.rs
