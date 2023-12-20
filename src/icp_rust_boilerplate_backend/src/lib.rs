@@ -1,111 +1,16 @@
 #[macro_use]
 extern crate serde;
-use candid::{Decode, Encode};
 use ic_cdk::api::time;
-use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
-use ic_stable_structures::{BoundedStorable, Cell, DefaultMemoryImpl, StableBTreeMap, Storable};
-use std::{borrow::Cow, cell::RefCell};
+use ic_cdk::caller;
+use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
+use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap};
+use std::cell::RefCell;
 
-type Memory = VirtualMemory<DefaultMemoryImpl>;
-type IdCell = Cell<u64, Memory>;
 
-#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
-struct Business {
-    id: u64,
-    name: String,
-    description: String,
-    address: String,
-    created_at: u64,
-    updated_at: Option<u64>,
-}
-
-impl Storable for Business {
-    fn to_bytes(&self) -> Cow<[u8]> {
-        Cow::Owned(Encode!(self).unwrap())
-    }
-
-    fn from_bytes(bytes: Cow<[u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).unwrap()
-    }
-}
-
-impl BoundedStorable for Business {
-    const MAX_SIZE: u32 = 1024;
-    const IS_FIXED_SIZE: bool = false;
-}
-
-#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
-struct Product {
-    id: u64,
-    name: String,
-    description: String,
-    price: u64,
-    created_at: u64,
-    updated_at: Option<u64>,
-}
-
-impl Storable for Product {
-    fn to_bytes(&self) -> Cow<[u8]> {
-        Cow::Owned(Encode!(self).unwrap())
-    }
-
-    fn from_bytes(bytes: Cow<[u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).unwrap()
-    }
-}
-
-impl BoundedStorable for Product {
-    const MAX_SIZE: u32 = 1024;
-    const IS_FIXED_SIZE: bool = false;
-}
-
-#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
-struct Order {
-    id: u64,
-    products: Vec<Product>,
-    total_price: u64,
-    created_at: u64,
-    updated_at: Option<u64>,
-}
-
-impl Storable for Order {
-    fn to_bytes(&self) -> Cow<[u8]> {
-        Cow::Owned(Encode!(self).unwrap())
-    }
-
-    fn from_bytes(bytes: Cow<[u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).unwrap()
-    }
-}
-
-impl BoundedStorable for Order {
-    const MAX_SIZE: u32 = 1024; // Adjust the maximum size as needed
-    const IS_FIXED_SIZE: bool = false;
-}
-
-#[derive(candid::CandidType, Serialize, Deserialize, Default)]
-struct BusinessPayload {
-    name: String,
-    description: String,
-    address: String,
-}
-
-#[derive(candid::CandidType, Serialize, Deserialize, Default)]
-struct ProductPayload {
-    name: String,
-    description: String,
-    price: u64,
-}
-
-#[derive(candid::CandidType, Serialize, Deserialize, Default)]
-struct OrderPayload {
-    product_ids: Vec<u64>,
-}
-
-#[derive(candid::CandidType, Deserialize, Serialize)]
-enum Error {
-    NotFound { msg: String },
-}
+mod types;
+use types::*;
+mod helpers;
+use helpers::*;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> = RefCell::new(
@@ -133,6 +38,7 @@ thread_local! {
     ));
 }
 
+// Function that users to fetch a business
 #[ic_cdk::query]
 fn get_business(id: u64) -> Result<Business, Error> {
     match _get_business(&id) {
@@ -142,9 +48,11 @@ fn get_business(id: u64) -> Result<Business, Error> {
         }),
     }
 }
-
+// Function that allows users to create a business
 #[ic_cdk::update]
-fn add_business(business: BusinessPayload) -> Option<Business> {
+fn add_business(business: BusinessPayload) -> Result<Business, Error> {
+    validate_business_payload(&business)?;
+
     let id = ID_COUNTER
         .with(|counter| {
             let current_value = *counter.borrow().get();
@@ -154,19 +62,24 @@ fn add_business(business: BusinessPayload) -> Option<Business> {
     let business = Business {
         id,
         name: business.name,
+        owner_principal: caller().to_string(),
         description: business.description,
         address: business.address,
         created_at: time(),
         updated_at: None,
+        products_ids: Vec::new()
     };
     do_insert_business(&business);
-    Some(business)
+    Ok(business)
 }
-
+// Function that allows a business owner to update his business
 #[ic_cdk::update]
 fn update_business(id: u64, payload: BusinessPayload) -> Result<Business, Error> {
     match BUSINESS_STORAGE.with(|service| service.borrow().get(&id)) {
         Some(mut business) => {
+            validate_business_payload(&payload)?;
+            is_caller_business_owner(&business)?;
+            
             business.name = payload.name;
             business.description = payload.description;
             business.address = payload.address;
@@ -183,13 +96,18 @@ fn update_business(id: u64, payload: BusinessPayload) -> Result<Business, Error>
     }
 }
 
-fn do_insert_business(business: &Business) {
-    BUSINESS_STORAGE
-        .with(|service| service.borrow_mut().insert(business.id, business.clone()));
-}
-
+// Function that allows a business owner to delete his business
 #[ic_cdk::update]
 fn delete_business(id: u64) -> Result<Business, Error> {
+    let mut business = get_business(id)?;
+    is_caller_business_owner(&business)?;
+
+
+    business.products_ids.iter_mut().for_each(|product_id| {
+        let _ = delete_product(product_id.clone());
+
+    });
+
     match BUSINESS_STORAGE.with(|service| service.borrow_mut().remove(&id)) {
         Some(business) => Ok(business),
         None => Err(Error::NotFound {
@@ -201,6 +119,7 @@ fn delete_business(id: u64) -> Result<Business, Error> {
     }
 }
 
+// Function that allows users to fetch a product from the canister
 #[ic_cdk::query]
 fn get_product(id: u64) -> Result<Product, Error> {
     match _get_product(&id) {
@@ -211,8 +130,12 @@ fn get_product(id: u64) -> Result<Product, Error> {
     }
 }
 
+// Function that allows a business owner to add a new product
 #[ic_cdk::update]
-fn add_product(product: ProductPayload) -> Option<Product> {
+fn add_product(product: ProductPayload) -> Result<Product, Error> {
+    let mut business = get_business(product.business_id)?;
+    is_caller_business_owner(&business)?;
+    validate_product_payload(&product)?;
     let id = ID_COUNTER
         .with(|counter| {
             let current_value = *counter.borrow().get();
@@ -221,20 +144,28 @@ fn add_product(product: ProductPayload) -> Option<Product> {
         .expect("cannot increment id counter");
     let product = Product {
         id,
+        business_id: product.business_id,
         name: product.name,
         description: product.description,
         price: product.price,
         created_at: time(),
         updated_at: None,
     };
+    business.products_ids.push(product.id);
+    do_insert_business(&business);
     do_insert_product(&product);
-    Some(product)
+    Ok(product)
 }
-
+// Function that allows the business owner of a product to update a product
 #[ic_cdk::update]
 fn update_product(id: u64, payload: ProductPayload) -> Result<Product, Error> {
     match PRODUCT_STORAGE.with(|service| service.borrow().get(&id)) {
         Some(mut product) => {
+            let business = get_business(product.business_id)?;
+            is_caller_business_owner(&business)?;
+            validate_product_payload(&payload)?;
+            // Update product's fields with the new payload values
+            // business_id is only set when creating the product but can't be updated.
             product.name = payload.name;
             product.description = payload.description;
             product.price = payload.price;
@@ -251,13 +182,18 @@ fn update_product(id: u64, payload: ProductPayload) -> Result<Product, Error> {
     }
 }
 
-fn do_insert_product(product: &Product) {
-    PRODUCT_STORAGE
-        .with(|service| service.borrow_mut().insert(product.id, product.clone()));
-}
-
+// Function that allows the business owner of a product to delete the product from the canister's storage
 #[ic_cdk::update]
 fn delete_product(id: u64) -> Result<Product, Error> {
+    let product= get_product(id)?;
+    let mut business = get_business(product.business_id)?;
+
+    is_caller_business_owner(&business)?;
+
+    business.products_ids.retain(|&product_id| product_id != id);
+
+    do_insert_business(&business);
+
     match PRODUCT_STORAGE.with(|service| service.borrow_mut().remove(&id)) {
         Some(product) => Ok(product),
         None => Err(Error::NotFound {
@@ -269,6 +205,7 @@ fn delete_product(id: u64) -> Result<Product, Error> {
     }
 }
 
+// Function to fetch an order from the canister
 #[ic_cdk::query]
 fn get_order(id: u64) -> Result<Order, Error> {
     match _get_order(&id) {
@@ -279,18 +216,13 @@ fn get_order(id: u64) -> Result<Order, Error> {
     }
 }
 
+// Function that allows customers to create an order
 #[ic_cdk::update]
 fn create_order(order_payload: OrderPayload) -> Result<Order, Error> {
-    let order_id = ID_COUNTER
-        .with(|counter| {
-            let current_value = *counter.borrow().get();
-            counter.borrow_mut().set(current_value + 1)
-        })
-        .expect("cannot increment id counter");
-
     let mut order_products = Vec::new();
     let mut total_price = 0;
-
+    // loops through the product_ids field of the payload to fetch the details of all the products
+    // and to ensure that all the product_id points to existing products
     for product_id in order_payload.product_ids.iter() {
         match _get_product(product_id) {
             Some(product) => {
@@ -304,9 +236,16 @@ fn create_order(order_payload: OrderPayload) -> Result<Order, Error> {
             }
         }
     }
+    let order_id = ID_COUNTER
+        .with(|counter| {
+            let current_value = *counter.borrow().get();
+            counter.borrow_mut().set(current_value + 1)
+        })
+        .expect("cannot increment id counter");
 
     let order = Order {
         id: order_id,
+        client_principal: caller().to_string(),
         products: order_products,
         total_price,
         created_at: time(),
@@ -317,13 +256,18 @@ fn create_order(order_payload: OrderPayload) -> Result<Order, Error> {
     Ok(order)
 }
 
+// Function that allows the client of an order to update the order's details
 #[ic_cdk::update]
 fn update_order(id: u64, order_payload: OrderPayload) -> Result<Order, Error> {
     match ORDER_STORAGE.with(|service| service.borrow().get(&id)) {
         Some(mut order) => {
+            // authentication checks to ensure that the caller is the principal of the client
+            is_caller_order_client(&order)?;
+
             let mut new_products = Vec::new();
             let mut new_total_price = 0;
-
+            // loops through the product_ids field of the payload to fetch the details of all the products
+            // and to ensure that all the product_id points to existing products
             for product_id in order_payload.product_ids.iter() {
                 match _get_product(product_id) {
                     Some(product) => {
@@ -350,8 +294,13 @@ fn update_order(id: u64, order_payload: OrderPayload) -> Result<Order, Error> {
     }
 }
 
+// Function that allows a client to delete his order
 #[ic_cdk::update]
 fn delete_order(id: u64) -> Result<Order, Error> {
+    let order = get_order(id)?;
+    // authentication checks to ensure that the caller is the principal of the client
+    is_caller_order_client(&order)?;
+
     match ORDER_STORAGE.with(|service| service.borrow_mut().remove(&id)) {
         Some(order) => Ok(order),
         None => Err(Error::NotFound {
@@ -360,19 +309,31 @@ fn delete_order(id: u64) -> Result<Order, Error> {
     }
 }
 
+// Helper function to save a business to the canister's storage
+fn do_insert_business(business: &Business) {
+    BUSINESS_STORAGE
+        .with(|service| service.borrow_mut().insert(business.id, business.clone()));
+}
+// Helper function to save a product to the canister's storage
+fn do_insert_product(product: &Product) {
+    PRODUCT_STORAGE
+        .with(|service| service.borrow_mut().insert(product.id, product.clone()));
+}
+// Helper function to save an order to the canister's storage
 fn do_insert_order(order: &Order) {
     ORDER_STORAGE
         .with(|service| service.borrow_mut().insert(order.id, order.clone()));
 }
-
+// Helper function to get a business from the canister's storage
 fn _get_business(id: &u64) -> Option<Business> {
     BUSINESS_STORAGE.with(|service| service.borrow().get(id))
 }
-
+// Helper function to get a product from the canister's storage
 fn _get_product(id: &u64) -> Option<Product> {
     PRODUCT_STORAGE.with(|service| service.borrow().get(id))
 }
 
+// Helper function to get an order from the canister's storage
 fn _get_order(id: &u64) -> Option<Order> {
     ORDER_STORAGE.with(|service| service.borrow().get(id))
 }

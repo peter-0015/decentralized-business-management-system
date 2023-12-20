@@ -5,16 +5,24 @@ type Business = record {
   description : text;
   created_at : nat64;
   address : text;
+  owner_principal : text;
+  products_ids : vec nat64;
 };
 type BusinessPayload = record {
   name : text;
   description : text;
   address : text;
 };
-type Error = variant { NotFound : record { msg : text } };
+type Error = variant {
+  InvalidPayload : record { errors : vec text };
+  NotFound : record { msg : text };
+  NotOrderClient : record { msg : text };
+  NotBusinessOwner : record { msg : text };
+};
 type Order = record {
   id : nat64;
   updated_at : opt nat64;
+  client_principal : text;
   total_price : nat64;
   created_at : nat64;
   products : vec Product;
@@ -23,26 +31,32 @@ type OrderPayload = record { product_ids : vec nat64 };
 type Product = record {
   id : nat64;
   updated_at : opt nat64;
+  business_id : nat64;
   name : text;
   description : text;
   created_at : nat64;
   price : nat64;
 };
-type ProductPayload = record { name : text; description : text; price : nat64 };
-type Result = variant { Ok : Order; Err : Error };
-type Result_1 = variant { Ok : Business; Err : Error };
-type Result_2 = variant { Ok : Product; Err : Error };
+type ProductPayload = record {
+  business_id : nat64;
+  name : text;
+  description : text;
+  price : nat64;
+};
+type Result = variant { Ok : Business; Err : Error };
+type Result_1 = variant { Ok : Product; Err : Error };
+type Result_2 = variant { Ok : Order; Err : Error };
 service : {
-  add_business : (BusinessPayload) -> (opt Business);
-  add_product : (ProductPayload) -> (opt Product);
-  create_order : (OrderPayload) -> (Result);
-  delete_business : (nat64) -> (Result_1);
-  delete_order : (nat64) -> (Result);
-  delete_product : (nat64) -> (Result_2);
-  get_business : (nat64) -> (Result_1) query;
-  get_order : (nat64) -> (Result) query;
-  get_product : (nat64) -> (Result_2) query;
-  update_business : (nat64, BusinessPayload) -> (Result_1);
-  update_order : (nat64, OrderPayload) -> (Result);
-  update_product : (nat64, ProductPayload) -> (Result_2);
+  add_business : (BusinessPayload) -> (Result);
+  add_product : (ProductPayload) -> (Result_1);
+  create_order : (OrderPayload) -> (Result_2);
+  delete_business : (nat64) -> (Result);
+  delete_order : (nat64) -> (Result_2);
+  delete_product : (nat64) -> (Result_1);
+  get_business : (nat64) -> (Result) query;
+  get_order : (nat64) -> (Result_2) query;
+  get_product : (nat64) -> (Result_1) query;
+  update_business : (nat64, BusinessPayload) -> (Result);
+  update_order : (nat64, OrderPayload) -> (Result_2);
+  update_product : (nat64, ProductPayload) -> (Result_1);
 }
